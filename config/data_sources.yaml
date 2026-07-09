@@ -1,0 +1,27 @@
+cache:
+  cache_dir: "./data_cache"
+  metadata_ext: ".meta.json"
+  compression: "snappy"
+  fetcher_priorities: ["databento", "ibkr"]
+  session_file: null
+
+databento:
+  enabled: true
+  api_key: "${DATABENTO_API_KEY}"
+
+ibkr:
+  enabled: false
+  host: "127.0.0.1"
+  port: 7497
+  client_id: 1
+  max_retries: 5
+  backoff_base_s: 1.5
+  read_only: true
+  use_rth: true
+
+demo:
+  enabled: true
+
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"

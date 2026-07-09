@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "quant-research"
+version = "0.1.0"
+description = "Quantitative trading strategy research framework"
+authors = [{ name = "GCL", email = "your_email@example.com" }]
+requires-python = ">=3.10"
+dependencies = [
+    "tradingcore>=0.1.0",
+    "pandas>=2.0.0",
+    "numpy>=1.24.0",
+    "pyyaml>=6.0",
+    "python-dotenv>=1.0.0",
+    "jupyter>=1.0.0",
+    "matplotlib>=3.7.0",
+    "scipy>=1.10.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["quant_research*"]
+exclude = ["tests*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
