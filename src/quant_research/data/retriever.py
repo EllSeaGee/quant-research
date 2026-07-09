@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Optional, Union
 from datetime import datetime
 import pandas as pd
+from dotenv import load_dotenv
 from tradingcore.factory import build_cache_manager, build_demo_cache_manager
 
 
@@ -13,7 +14,7 @@ class DataRetriever:
     """Wrapper for CacheManager to simplify data retrieval for research."""
     
     def __init__(self, config_path: Optional[Union[str, Path]] = None, 
-                 use_demo: bool = False):
+                 use_demo: bool = False, secrets_path: Optional[Union[str, Path]] = None):
         """
         Initialize data retriever.
         
@@ -23,7 +24,20 @@ class DataRetriever:
             Path to cache manager configuration file
         use_demo : bool
             If True, use demo cache manager for testing
+        secrets_path : str | Path | None
+            Path to secrets file (e.g., authvars.env). If None, uses default
+            C:\Users\hotst\Projects\.secrets\authvars.env
         """
+        # Load environment variables from secrets file
+        if secrets_path is None:
+            # Default to the shared secrets file
+            secrets_path = Path(r"C:\Users\hotst\Projects\.secrets\authvars.env")
+        else:
+            secrets_path = Path(secrets_path)
+        
+        if secrets_path.exists():
+            load_dotenv(secrets_path)
+        
         if use_demo:
             self.cache_manager = build_demo_cache_manager()
         else:

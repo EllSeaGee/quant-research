@@ -44,8 +44,11 @@ pip install -e .
 
 5. Configure environment:
 ```bash
+# The project uses shared credentials from C:\Users\hotst\Projects\.secrets\authvars.env
+# No local .env file is required unless you want to override specific values
+# If you need local overrides, create a .env file:
 cp .env.example .env
-# Edit .env with your API credentials
+# Edit .env with any local overrides
 ```
 
 ## Usage

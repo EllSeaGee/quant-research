@@ -7,17 +7,18 @@ cache:
 
 databento:
   enabled: true
-  api_key: "${DATABENTO_API_KEY}"
+  api_key: "${DB_API_KEY}"
 
 ibkr:
   enabled: false
-  host: "127.0.0.1"
-  port: 7497
-  client_id: 1
+  host: "${IB_HOST:-127.0.0.1}"
+  port: ${IB_PORT:-7497}
+  client_id: ${IB_CLIENT_ID:-1}
   max_retries: 5
   backoff_base_s: 1.5
   read_only: true
   use_rth: true
+  default_account: "${IB_ACCOUNT}"
 
 demo:
   enabled: true
