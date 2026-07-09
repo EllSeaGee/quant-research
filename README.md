@@ -58,14 +58,16 @@ cp .env.example .env
 ```python
 from quant_research.data import DataRetriever
 
-# Use demo data for testing
+# Use demo data for testing (no credentials required)
 retriever = DataRetriever(use_demo=True)
 data = retriever.get_data("ES", "2024-01-01", "2024-01-31", "1h")
 
-# Use production data
+# Use production data (automatically loads shared credentials)
 retriever = DataRetriever(config_path="config/data_sources.yaml")
 data = retriever.get_data("ES", "2024-01-01", "2024-01-31", "1h", source="databento")
 ```
+
+**Note:** The DataRetriever automatically loads credentials from `C:\Users\hotst\Projects\.secrets\authvars.env` at module import time. This ensures the trading_core_utils config loader can access the credentials when it interpolates environment variables in the configuration.
 
 ### Strategy Development
 

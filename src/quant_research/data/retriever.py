@@ -7,6 +7,14 @@ from typing import Optional, Union
 from datetime import datetime
 import pandas as pd
 from dotenv import load_dotenv
+
+# Load shared secrets BEFORE importing tradingcore modules
+# This ensures environment variables are available when config_loader.py calls load_dotenv()
+_default_secrets_path = Path(r"C:\Users\hotst\Projects\.secrets\authvars.env")
+if _default_secrets_path.exists():
+    load_dotenv(_default_secrets_path)
+
+# Now import tradingcore modules (config_loader will see the loaded environment variables)
 from tradingcore.factory import build_cache_manager, build_demo_cache_manager
 
 
@@ -26,17 +34,15 @@ class DataRetriever:
             If True, use demo cache manager for testing
         secrets_path : str | Path | None
             Path to secrets file (e.g., authvars.env). If None, uses default
-            C:\Users\hotst\Projects\.secrets\authvars.env
+            C:\Users\hotst\Projects\.secrets\authvars.env. Note: The default
+            secrets file is loaded at module import time, so this parameter
+            is only needed if you want to use a different secrets file.
         """
-        # Load environment variables from secrets file
-        if secrets_path is None:
-            # Default to the shared secrets file
-            secrets_path = Path(r"C:\Users\hotst\Projects\.secrets\authvars.env")
-        else:
-            secrets_path = Path(secrets_path)
-        
-        if secrets_path.exists():
-            load_dotenv(secrets_path)
+        # Load custom secrets file if provided (different from default)
+        if secrets_path is not None:
+            custom_secrets_path = Path(secrets_path)
+            if custom_secrets_path.exists():
+                load_dotenv(custom_secrets_path)
         
         if use_demo:
             self.cache_manager = build_demo_cache_manager()
