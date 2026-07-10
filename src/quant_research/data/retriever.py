@@ -23,7 +23,7 @@ class DataRetriever:
     
     def __init__(self, config_path: Optional[Union[str, Path]] = None, 
                  use_demo: bool = False, secrets_path: Optional[Union[str, Path]] = None):
-        """
+        r"""
         Initialize data retriever.
         
         Parameters
