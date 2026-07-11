@@ -1,10 +1,13 @@
 """Setup detector — produces DetectedSetupOpening + terminal outcome.
 
-Phase 1 goal (Implementation Plan): a *minimal but real* detector. "Real" matters
-because the two-mode repaint test must have something that *could* repaint if done
-wrong — so the swing/pivot structure, trend segmentation, and detection timing are
-implemented causally (Detector Spec v1 sections 3-6, 12-13), not stubbed. It is
-not the full permissive-first detector (that is Phase 2); it is causally honest.
+Phase 2 (Implementation Plan section 4): the full **permissive-first** detector,
+per Detector Spec v1.1. The structural skeleton is *tight* (a real impulse-then-
+pullback must exist — sections 4/5) while qualification is *loose*: every
+``StaticFeatures`` field (``grimes_variant``, ``pullback_count_in_trend``,
+``vol_ratio_at_detection``, ``wick_indecision_at_detection``,
+``weekly_agreement_at_detection``) is EMITTED, never used to drop a setup
+(section 10, Brief section 4). Permissiveness is protective — it preserves the
+Option-C control population of untaken setups.
 
 Causality spine (Detector Spec section 2):
   * strength-N pivots are confirmed only N bars later: known_at_bar = pivot_bar + N;
@@ -12,6 +15,12 @@ Causality spine (Detector Spec section 2):
   * pullback_count_in_trend uses only pivots confirmed by detection_bar (the
     repaint-prone component, Detector Spec section 6);
   * terminal outcome is causal — knowable only at the terminating bar's close.
+
+Impulse qualification (section 4): criterion 1 (extent) passes via 1a (ATR-multiple
+from origin) OR 1b (Keltner-band proximity); criterion 2 (efficiency, TR-based,
+v1.1) and criterion 3 (intra-impulse retracement on intrabar highs/lows, v1.1)
+must both hold. All thresholds are PROVISIONAL priors (section 14); they are
+deliberately generous and must NOT be tightened to recover the 500 real trades.
 
 The detector depends only on ``BarSeriesProvider`` (convention 2); it never imports
 the cache manager and never uses a bar beyond the requested end_index.
@@ -34,27 +43,46 @@ from .contract import (
 from . import primitives
 
 
-DETECTOR_VERSION = "phase1-minimal-v1"
+DETECTOR_VERSION = "phase2-v1"
 
 
 @dataclass(frozen=True)
 class DetectorParams:
+    # --- structural (section 3) ---
     n_pivot: int = 2
+    # --- impulse qualification (section 4) ---
     k_extent: float = 2.0            # impulse extent, x ATR from origin (sub-test 1a)
+    ema_period_keltner: int = 20     # centerline period (sub-test 1b)
+    atr_period_keltner: int = 20     # band volatility unit (sub-test 1b)
+    k_keltner: float = 2.25          # band multiplier (sub-test 1b)
+    k_tol: float = 0.25              # "close enough" fraction of ATR_20 (sub-test 1b)
+    k_efficiency: float = 0.35       # criterion 2 (TR-based since v1.1)
+    l_impulse_max: int = 6           # criterion 2 leg-length cap (bars)
+    k_intra: float = 0.45            # criterion 3 (intrabar-based since v1.1)
+    # --- pullback validity (section 5) ---
     atr_period: int = 14
     min_pullback_bars: int = 1
+    k_vol: float = 0.75              # pullback vol <= k_vol * impulse vol
     d_min: float = 0.10              # min retracement to be a pullback
     two_thirds: float = 2.0 / 3.0    # retracement-floor constant
+    # --- weekly swing feature (section 10) ---
+    n_pivot_weekly: int = 1
+    w_weekly_search: int = 6
+    bars_per_week: int = 5
+    # --- substrate / termination (sections 12, 13) ---
     pre_anchor_lookback: int = 45
     max_pending_window: int = 10
 
+    _HASHED_FIELDS = (
+        "n_pivot", "k_extent", "ema_period_keltner", "atr_period_keltner",
+        "k_keltner", "k_tol", "k_efficiency", "l_impulse_max", "k_intra",
+        "atr_period", "min_pullback_bars", "k_vol", "d_min", "two_thirds",
+        "n_pivot_weekly", "w_weekly_search", "bars_per_week",
+        "pre_anchor_lookback", "max_pending_window",
+    )
+
     def param_hash(self) -> str:
-        payload = "|".join(
-            f"{k}={getattr(self, k)}" for k in (
-                "n_pivot", "k_extent", "atr_period", "min_pullback_bars",
-                "d_min", "two_thirds", "pre_anchor_lookback", "max_pending_window",
-            )
-        )
+        payload = "|".join(f"{k}={getattr(self, k)}" for k in self._HASHED_FIELDS)
         return hashlib.sha1(payload.encode()).hexdigest()[:16]
 
 
@@ -125,6 +153,92 @@ def _atr_at(bars: Sequence[Bar], bar_index: int, period: int) -> float:
         return primitives.atr_ending_at(bars, bar_index, period)
     except ValueError:
         return 0.0
+
+
+def _classify_grimes(bars: Sequence[Bar], pb_positions: list[int],
+                     is_long: bool) -> GrimesVariant:
+    """Coarse permissive-first pullback-structure classification (Detector Spec
+    section 10). A SCORE, never a filter; v1 recognisers are intentionally coarse
+    and noisy. Recognises SIMPLE / ANTI_SNAP / COMPLEX / UNCLASSIFIED from the
+    countertrend-side extrema path (NESTED needs sub-structure not resolved in v1).
+    """
+    if len(pb_positions) < 2:
+        return GrimesVariant.SIMPLE
+    # countertrend-side series: lows for LONG, highs for SHORT
+    series = [bars[i].low if is_long else bars[i].high for i in pb_positions]
+    # count monotone legs: a "leg" break is a direction reversal in the series
+    legs = 1
+    prev_dir = 0
+    for a, b in zip(series, series[1:]):
+        d = (b > a) - (b < a)
+        if d != 0 and d != prev_dir and prev_dir != 0:
+            legs += 1
+        if d != 0:
+            prev_dir = d
+    # depth-so-far reached quickly => ANTI_SNAP (sharp, resolves in <=3 bars)
+    if is_long:
+        deepest_idx = min(range(len(series)), key=lambda k: series[k])
+    else:
+        deepest_idx = max(range(len(series)), key=lambda k: series[k])
+    if legs >= 2:
+        return GrimesVariant.COMPLEX
+    if deepest_idx <= 2 and len(series) >= 2:
+        return GrimesVariant.ANTI_SNAP
+    if legs == 1:
+        return GrimesVariant.SIMPLE
+    return GrimesVariant.UNCLASSIFIED
+
+
+def _wick_indecision(bars: Sequence[Bar], pb_positions: list[int]) -> float | None:
+    """Wick-prominence over the pullback bars (Detector Spec section 10): the mean
+    of ``(upper_wick + lower_wick)/range`` across pullback bars. A scored feature,
+    never a gate; None if no pullback bars have a non-zero range."""
+    ratios = []
+    for i in pb_positions:
+        b = bars[i]
+        rng = b.high - b.low
+        if rng <= 0:
+            continue
+        # Clamp the body into [low, high] so an out-of-range open (e.g. a gap open
+        # or a reconstructed open==close) never yields a negative wick.
+        body_hi = min(b.high, max(b.open, b.close))
+        body_lo = max(b.low, min(b.open, b.close))
+        wicks = (b.high - body_hi) + (body_lo - b.low)
+        ratios.append(wicks / rng)
+    if not ratios:
+        return None
+    return sum(ratios) / len(ratios)
+
+
+def _weekly_agreement(bars: Sequence[Bar], detection_bar: int, is_long: bool, *,
+                      n_weekly: int, w_search: int, bars_per_week: int) -> float | None:
+    """Signed agreement of the last confirmed weekly swing direction with the daily
+    setup direction (Detector Spec section 10), in {-1, 0, +1}.
+
+    Resamples completed weekly bars (only weeks whose bars all have bar_index <=
+    detection_bar leak no future info), finds the most recently CONFIRMED weekly
+    strength-``n_weekly`` pivot scanning back up to ``w_search`` weeks: a pivot high
+    => the swing topped (down, -1), a pivot low => bottomed (up, +1). Returns None
+    if no weekly pivot confirms within the search cap. The signed agreement is the
+    weekly direction times the setup direction sign."""
+    daily = [b for b in bars if b.bar_index <= detection_bar]
+    weekly = primitives.resample_weekly(daily, bars_per_week)
+    if len(weekly) < 2 * n_weekly + 1:
+        return None
+    setup_sign = 1.0 if is_long else -1.0
+    # newest confirmable weekly pivot position: confirmed n_weekly weeks later, so
+    # scan positions whose +n_weekly confirmation index is within the series.
+    last_confirmable = len(weekly) - 1 - n_weekly
+    checked = 0
+    for pos in range(last_confirmable, -1, -1):
+        if checked >= w_search:
+            break
+        checked += 1
+        if primitives.is_pivot_high(weekly, pos, n_weekly):
+            return -1.0 * setup_sign  # weekly topped (down)
+        if primitives.is_pivot_low(weekly, pos, n_weekly):
+            return 1.0 * setup_sign   # weekly bottomed (up)
+    return None
 
 
 def _make_setup_id(symbol: str, timeframe: str, detection_bar: int,
@@ -215,11 +329,33 @@ class Detector:
         if direction is Direction.SHORT and not end_price < origin_price:
             return None
 
-        # extent sub-test 1a: |end - origin| >= k_extent * ATR(origin_bar)
+        is_long = direction is Direction.LONG
+
+        # === Impulse qualification (Detector Spec v1.1 section 4) ===
+        # Criterion 1 (extent) — passes if 1a OR 1b holds (permissive-first).
+        #   1a — ATR-multiple from origin.
         atr_origin = _atr_at(bars, impulse_origin_bar, p.atr_period)
-        if atr_origin <= 0:
+        extent_1a = atr_origin > 0 and abs(end_price - origin_price) >= p.k_extent * atr_origin
+        #   1b — Keltner-band proximity at impulse_end_bar.
+        extent_1b = primitives.keltner_proximity_pass(
+            bars, end_pos, is_long=is_long,
+            ema_period=p.ema_period_keltner, atr_period=p.atr_period_keltner,
+            k_keltner=p.k_keltner, k_tol=p.k_tol)
+        if not (extent_1a or extent_1b):
             return None
-        if abs(end_price - origin_price) < p.k_extent * atr_origin:
+
+        # Criterion 2 (sharpness / efficiency, TR-based since v1.1) AND leg cap.
+        leg_length = end_pos - origin_pos  # bar-span length of the impulse leg
+        if leg_length > p.l_impulse_max:
+            return None
+        efficiency = primitives.impulse_efficiency(bars, origin_pos, end_pos)
+        if efficiency < p.k_efficiency:
+            return None
+
+        # Criterion 3 (low intra-impulse retracement, intrabar basis since v1.1).
+        intra_ratio = primitives.intra_impulse_retrace_ratio(
+            bars, origin_pos, end_pos, origin_price, is_long=is_long)
+        if intra_ratio > p.k_intra:
             return None
 
         pullback_start_bar = impulse_end_bar
@@ -240,7 +376,8 @@ class Detector:
         span = end_price - origin_price
         retracement_floor = end_price - p.two_thirds * span
 
-        # pullback validity: some retracement present by detection_bar, floor intact
+        # === Pullback validity (Detector Spec section 5) ===
+        # (permissive on depth, strict on "is it a pullback at all")
         pb_positions = [i for i in range(imap[pullback_start_bar], imap[detection_bar] + 1)]
         if direction is Direction.LONG:
             running_extreme = min(bars[i].low for i in pb_positions)
@@ -250,9 +387,24 @@ class Detector:
             running_extreme = max(bars[i].high for i in pb_positions)
             retrace = running_extreme - end_price
             floor_breached = running_extreme > retracement_floor
+        # Upper bound is the floor, not a filter: already breached => nothing to enter.
         if floor_breached:
             return None
+        # Some retracement present (minimum to be a setup at all; NOT a preference).
         if retrace < p.d_min * abs(span):
+            return None
+        # Lower volatility than the impulse: mean_TR(pullback) <= k_vol * mean_TR(impulse).
+        # Pullback bars run from the FIRST bar after the impulse extreme (the first
+        # true pullback bar), not the impulse-end bar itself.
+        mean_tr_impulse = primitives.mean_true_range_between(
+            bars, impulse_origin_bar, impulse_end_bar)
+        pb_first = pullback_start_bar + 1
+        if pb_first <= detection_bar and pb_first in imap:
+            mean_tr_pullback = primitives.mean_true_range_between(
+                bars, pb_first, detection_bar)
+        else:
+            mean_tr_pullback = 0.0
+        if mean_tr_impulse > 0 and mean_tr_pullback > p.k_vol * mean_tr_impulse:
             return None
 
         # pre-anchor substrate window
@@ -271,16 +423,20 @@ class Detector:
         impulse_end = CausalPrice(price=end_price, defining_bar=impulse_end_bar,
                                   known_at_bar=impulse_end_known)
 
-        pullback_count = _causal_pullback_count(bars, n, detection_bar, end_pos)
-
         atr_at_detection = _atr_at(bars, detection_bar, p.atr_period)
 
+        # === Permissive-first StaticFeatures (section 10) — EMITTED, NEVER GATE ===
+        pullback_count = _causal_pullback_count(bars, n, detection_bar, end_pos)
+        pb_bar_positions = [i for i in range(imap[pullback_start_bar], imap[detection_bar] + 1)]
         features = StaticFeatures(
-            grimes_variant=GrimesVariant.UNCLASSIFIED,
+            grimes_variant=_classify_grimes(bars, pb_bar_positions, is_long),
             pullback_count_in_trend=pullback_count,
-            weekly_agreement_at_detection=None,
-            vol_ratio_at_detection=None,
-            wick_indecision_at_detection=None,
+            weekly_agreement_at_detection=_weekly_agreement(
+                bars, detection_bar, is_long, n_weekly=p.n_pivot_weekly,
+                w_search=p.w_weekly_search, bars_per_week=p.bars_per_week),
+            vol_ratio_at_detection=(mean_tr_pullback / mean_tr_impulse
+                                    if mean_tr_impulse > 0 else None),
+            wick_indecision_at_detection=_wick_indecision(bars, pb_bar_positions),
         )
 
         setup_id = _make_setup_id(symbol, timeframe, detection_bar,

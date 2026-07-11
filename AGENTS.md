@@ -7,7 +7,16 @@ Use **pytest** to write tests for all code you write. Test coverage does not nee
 - **Project Brief** (`docs/project_brief.md`) - Research questions and system scope
 - **Implementation Plan v2** (`docs/implementation_plan_v2.md`) - Build phases and acceptance criteria  
 - **Setup/Geometry Contract v2.1** (`docs/setup_geometry_contract_v2_1.md`) - Data interface and invariants
-- **Detector Spec v1** (`docs/detector_spec_v1.md`) - Setup detection logic
+- **Detector Spec v1.1** (`docs/detector_spec_v1_1.md`) - Setup detection logic. **v1.1 is now authoritative** and supersedes `docs/detector_spec_v1.md`.
+
+## Detector Spec Version
+
+`docs/detector_spec_v1_1.md` (v1.1) is the authoritative detector spec. Its v1 → v1.1 changelog revised **§4 impulse qualification criteria 2 & 3 only**:
+
+- **Criterion 2 (efficiency):** denominator changed from `Σ|close-to-close|` to `Σ TR(t)` (the §7 True Range formula); `k_efficiency` `0.55 → 0.35`.
+- **Criterion 3 (intra-impulse retracement):** `running_extent`/`max_adverse_run` now defined on **intrabar highs/lows** (not closes); `k_intra` `0.40 → 0.45`.
+
+These criteria are **Phase-2** work (the Phase-1 minimal detector implements only criterion 1a), so no code change was made when v1.1 landed. Apply the v1.1 values/formulas when building the full §4 impulse qualification in Phase 2.
 
 ## Testing Approach
 

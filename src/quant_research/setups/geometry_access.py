@@ -14,7 +14,7 @@ it would read a cache. A caller cannot tell which.
 
 from dataclasses import dataclass
 
-from .boundary import TrivialBoundaryConstructor, maturity_retracement_fn
+from .boundary import RealBoundaryConstructor, maturity_retracement_fn
 from .contract import (
     BoundaryConstructor,
     DetectedSetupOpening,
@@ -74,13 +74,14 @@ class GeometryAccess:
 
 
 def build_default_access() -> GeometryAccess:
-    """Phase-1 default wiring: the trivial constructor + retracement maturity path.
+    """Phase-2 default wiring: the real estimator-C constructor + retracement
+    maturity path.
 
     ``maturity_retracement`` is the runnable-build default (Detector Spec section 8.4,
     PROVISIONAL — not a selection); the barcount path stays equally exercised so
     selection is a config flip, not a rewrite.
     """
     return GeometryAccess(
-        constructor=TrivialBoundaryConstructor(),
+        constructor=RealBoundaryConstructor(),
         maturity_fn=maturity_retracement_fn,
     )

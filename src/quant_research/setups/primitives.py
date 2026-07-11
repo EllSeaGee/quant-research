@@ -10,6 +10,7 @@ Bars are addressed by their canonical ``bar_index`` (not list position). Helper
 lookups build an index map so callers can pass any ascending, contiguous window.
 """
 
+import math
 from typing import Sequence
 
 from .contract import Bar
@@ -109,3 +110,163 @@ def is_pivot_low(bars: Sequence[Bar], pos: int, n: int) -> bool:
         if not (lo < bars[pos - i].low and lo < bars[pos + i].low):
             return False
     return True
+
+
+# =============================================================================
+# Phase 2 additions — estimator C fit, Keltner band, impulse texture, weekly swing
+# All remain pure functions of bars and strictly causal (Detector Spec v1.1).
+# =============================================================================
+
+def ols_fit(xs: Sequence[float], ys: Sequence[float]) -> tuple[float, float]:
+    """Ordinary least-squares line ``y = slope*x + intercept`` through the mean of
+    the points (Detector Spec section 8.2 default estimator-C variant). Fitting
+    through the mean lets individual extrema penetrate the line on both sides.
+
+    With a single point (or all-equal x) the slope is 0 and the intercept is the
+    mean y — a flat line, matching the warm-up "flat at the single extreme" rule.
+    """
+    n = len(xs)
+    if n == 0:
+        raise ValueError("ols_fit requires at least one point")
+    mean_x = sum(xs) / n
+    mean_y = sum(ys) / n
+    sxx = sum((x - mean_x) ** 2 for x in xs)
+    if sxx == 0.0:
+        return 0.0, mean_y
+    sxy = sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, ys))
+    slope = sxy / sxx
+    intercept = mean_y - slope * mean_x
+    return slope, intercept
+
+
+def ols_project(xs: Sequence[float], ys: Sequence[float],
+                x_target: float) -> tuple[float, float]:
+    """Fit an OLS line to ``(xs, ys)`` and return ``(projected_y, rms_residual)``.
+
+    ``projected_y`` is the fitted line evaluated at ``x_target`` (the t+1 horizon,
+    Detector Spec section 8.2). ``rms_residual`` is the root-mean-square of the
+    extrema about the fitted line (``fit_dispersion``, section 8.2).
+    """
+    slope, intercept = ols_fit(xs, ys)
+    projected = intercept + slope * x_target
+    resid = [y - (intercept + slope * x) for x, y in zip(xs, ys)]
+    rms = math.sqrt(sum(r * r for r in resid) / len(resid)) if resid else 0.0
+    return projected, rms
+
+
+def ema_ending_at(bars: Sequence[Bar], t: int, period: int) -> float | None:
+    """Exponential moving average of ``close`` at bar_index ``t`` (Detector Spec
+    section 4, sub-test 1b centerline). Seeded by the simple average of the first
+    ``period`` closes in the provided window, standard recursion (alpha =
+    2/(period+1)) thereafter. Uses only bars with bar_index <= t; returns ``None``
+    if fewer than ``period`` such bars exist (insufficient history)."""
+    closes = [b.close for b in bars if b.bar_index <= t]
+    if len(closes) < period:
+        return None
+    alpha = 2.0 / (period + 1)
+    ema = sum(closes[:period]) / period
+    for c in closes[period:]:
+        ema = alpha * c + (1 - alpha) * ema
+    return ema
+
+
+def keltner_proximity_pass(bars: Sequence[Bar], end_pos: int, *, is_long: bool,
+                           ema_period: int, atr_period: int,
+                           k_keltner: float, k_tol: float) -> bool:
+    """Sub-test 1b (Detector Spec section 4): does ``impulse_end`` reach within
+    ``k_tol*ATR`` of the ``k_keltner*ATR`` Keltner band?
+
+    LONG: ``end.high >= EMA + (k_keltner - k_tol)*ATR``. Mirror for SHORT with the
+    lower band and ``end.low <=``. Evaluated at ``impulse_end_bar`` using only bars
+    <= that bar. Returns ``False`` if EMA/ATR history is insufficient (1a can still
+    carry extent via the OR-logic in section 4)."""
+    end_bar = bars[end_pos].bar_index
+    ema = ema_ending_at(bars, end_bar, ema_period)
+    if ema is None:
+        return False
+    try:
+        atr20 = atr_ending_at(bars, end_bar, atr_period)
+    except ValueError:
+        return False
+    effective = (k_keltner - k_tol) * atr20
+    if is_long:
+        return bars[end_pos].high >= ema + effective
+    return bars[end_pos].low <= ema - effective
+
+
+def impulse_efficiency(bars: Sequence[Bar], origin_pos: int, end_pos: int) -> float:
+    """Criterion 2 ratio (Detector Spec section 4, v1.1): ``net_displacement /
+    sum(TR(t))`` over the impulse leg ``[origin_pos, end_pos]``. TR is the frozen
+    section-7 gap-absorbing True Range, summed per-bar (not averaged). Uses the
+    bar before ``origin_pos`` for the first TR's prev_close when available."""
+    if end_pos < origin_pos:
+        return 0.0
+    net_displacement = abs(bars[end_pos].close - bars[origin_pos].close)
+    total_tr = 0.0
+    for pos in range(origin_pos, end_pos + 1):
+        pc = bars[pos - 1].close if pos - 1 >= 0 else None
+        total_tr += true_range(bars[pos], pc)
+    if total_tr == 0.0:
+        return 0.0
+    return net_displacement / total_tr
+
+
+def intra_impulse_retrace_ratio(bars: Sequence[Bar], origin_pos: int, end_pos: int,
+                                origin_price: float, *, is_long: bool) -> float:
+    """Criterion 3 ratio (Detector Spec section 4, v1.1): ``max_adverse_run /
+    running_extent`` computed on **intrabar highs/lows** over the impulse leg.
+
+    LONG: ``running_extent(t) = running_high(t) - origin_price`` where
+    ``running_high`` is the highest intrabar high reached so far; ``max_adverse_run``
+    is the deepest giveback from that running peak measured against subsequent
+    intrabar lows. Mirror for SHORT. Returns 0 if the leg never makes progress."""
+    max_adverse_run = 0.0
+    peak_extent = 0.0
+    if is_long:
+        running_high = bars[origin_pos].high
+        for pos in range(origin_pos, end_pos + 1):
+            running_high = max(running_high, bars[pos].high)
+            peak_extent = max(peak_extent, running_high - origin_price)
+            giveback = running_high - bars[pos].low
+            max_adverse_run = max(max_adverse_run, giveback)
+    else:
+        running_low = bars[origin_pos].low
+        for pos in range(origin_pos, end_pos + 1):
+            running_low = min(running_low, bars[pos].low)
+            peak_extent = max(peak_extent, origin_price - running_low)
+            giveback = bars[pos].high - running_low
+            max_adverse_run = max(max_adverse_run, giveback)
+    if peak_extent <= 0.0:
+        return float("inf")
+    return max_adverse_run / peak_extent
+
+
+def resample_weekly(bars: Sequence[Bar], bars_per_week: int = 5) -> list[Bar]:
+    """Resample daily bars into weekly bars by fixed ``bars_per_week`` grouping on
+    bar_index (Detector Spec section 10; exact session/roll boundaries are a
+    [BIND — codebase] value, ~5/week assumed here for synthetic daily series).
+
+    A weekly bar's ``high``/``low`` are the group extrema, ``close`` the last
+    close, and ``bar_index`` the week number ``daily_bar_index // bars_per_week`` of
+    its first daily bar; only fully-formed weeks are emitted (no partial current
+    week leaks future information)."""
+    if not bars:
+        return []
+    groups: dict[int, list[Bar]] = {}
+    for b in bars:
+        groups.setdefault(b.bar_index // bars_per_week, []).append(b)
+    weekly: list[Bar] = []
+    for week in sorted(groups):
+        grp = groups[week]
+        if len(grp) < bars_per_week:
+            continue  # partial (current) week — do not emit
+        weekly.append(Bar(
+            bar_index=week,
+            timestamp=grp[0].timestamp,
+            open=grp[0].open,
+            high=max(g.high for g in grp),
+            low=min(g.low for g in grp),
+            close=grp[-1].close,
+            volume=None,
+        ))
+    return weekly

@@ -9,6 +9,7 @@ from typing import Sequence
 
 from quant_research.setups.adapter import InMemoryBarProvider
 from quant_research.setups.boundary import (
+    RealBoundaryConstructor,
     TrivialBoundaryConstructor,
     maturity_retracement_fn,
 )
@@ -67,7 +68,7 @@ def build_pipeline(variant: str = "timeout") -> Pipeline:
     fp = recorder.record(provider, "ES", "1d", detection.opening.setup_id,
                          detection.opening.entry_eligible_bar, meta.data_end_index)
 
-    constructor = TrivialBoundaryConstructor()
+    constructor = RealBoundaryConstructor()
     maturity_fn = maturity_retracement_fn
     access = GeometryAccess(constructor, maturity_fn,
                             materializer=OnDemandGeometryMaterializer())
